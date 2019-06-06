@@ -1,0 +1,128 @@
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  name: jenkins-blue
+  namespace: kube-ops
+  labels:
+    name: jenkins-blue
+spec:
+  serviceName: jenkins-blue
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      name: jenkins-blue
+      labels:
+        name: jenkins-blue
+    spec:
+      terminationGracePeriodSeconds: 10
+      serviceAccountName: jenkins-blue
+      containers:
+        - name: jenkins-blue
+          securityContext:
+            privileged: true
+          image: 192.168.122.143/base-image/jenkins-blue:v2
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+            - containerPort: 50000
+          resources:
+            limits:
+              cpu: 1
+              memory: 1Gi
+            requests:
+              cpu: 0.5
+              memory: 500Mi
+          env:
+            - name: LIMITS_MEMORY
+              valueFrom:
+                resourceFieldRef:
+                  resource: limits.memory
+                  divisor: 1Mi
+            - name: JAVA_OPTS
+              # value: -XX:+UnlockExperimentalVMOptions -XX:+UseCGroupMemoryLimitForHeap -XX:MaxRAMFraction=1 -XshowSettings:vm -Dhudson.slaves.NodeProvisioner.initialDelay=0 -Dhudson.slaves.NodeProvisioner.MARGIN=50 -Dhudson.slaves.NodeProvisioner.MARGIN0=0.85
+              value: -Xmx2048m -XshowSettings:vm -Dhudson.slaves.NodeProvisioner.initialDelay=0 -Dhudson.slaves.NodeProvisioner.MARGIN=50 -Dhudson.slaves.NodeProvisioner.MARGIN0=0.85
+          volumeMounts:
+            - name: jenkins-home
+              mountPath: /var/jenkins_home
+            - name: docker
+              mountPath: /var/run/docker.sock
+            - name: tz-config
+              mountPath: /etc/localtime
+            - name: docker-run
+              mountPath: /usr/bin/docker
+          livenessProbe:
+            httpGet:
+              path: /login
+              port: 8080
+            initialDelaySeconds: 60
+            timeoutSeconds: 5
+            failureThreshold: 12 # ~2 minutes
+          readinessProbe:
+            httpGet:
+              path: /login
+              port: 8080
+            initialDelaySeconds: 60
+            timeoutSeconds: 5
+            failureThreshold: 12 # ~2 minutes
+      securityContext:
+        fsGroup: 1000
+      volumes:
+      - name: docker
+        hostPath:
+          path: /var/run/docker.sock
+      - name: tz-config
+        hostPath:
+          path: /usr/share/zoneinfo/Asia/Shanghai
+      - name: docker-run
+        hostPath:
+          path: /usr/bin/docker
+  volumeClaimTemplates:
+  - metadata:
+      name: jenkins-home
+      namespace: kube-ops
+    spec:
+      accessModes: [ "ReadWriteMany" ]
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins-blue
+  namespace: kube-ops
+spec:
+  # type: LoadBalancer
+  selector:
+    name: jenkins-blue
+  # ensure the client ip is propagated to avoid the invalid crumb issue when using LoadBalancer (k8s >=1.7)
+  #externalTrafficPolicy: Local
+  ports:
+    -
+      name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+    -
+      name: agent
+      port: 50000
+      protocol: TCP
+
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: jenkins-blue
+  namespace: kube-ops
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /
+        backend:
+          serviceName: jenkins-blue
+          servicePort: 80
+    host: jenkins-blue.example.com
